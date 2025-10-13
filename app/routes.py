@@ -5,7 +5,10 @@ from .services import (
     get_recruiters,
     get_workers,
     create_worker,
+    remove_worker,
+    change_password,
     assign_worker,
+    remove_recruiter,
     recruiter_workers,
     worker_recruiter,
     all_assignments,
@@ -57,6 +60,9 @@ def logout():
     # Stateless logout: frontend should clear stored tokens/session
     return {"ok": True}
 
+@router.post("/auth/change-password")
+def change_password_route(email: str, old_password: str, new_password: str):
+    return change_password(email, old_password, new_password)
 
 @router.get("/admin/recruiters")
 def list_recruiters():
@@ -77,7 +83,12 @@ def add_worker(email: str, password: str):
 def assign(worker_id: int, recruiter_id: int):
     return assign_worker(worker_id, recruiter_id)
 
-
+@router.delete("/admin/delete_recruiter")
+def delete_recruiter(email: str):
+    return remove_recruiter(email)
+@router.delete("/admin/delete_worker")
+def delete_recruiter(email: str):
+    return remove_worker(email)
 @router.get("/recruiter/workers")
 def get_my_workers(recruiter_id: int):
     return recruiter_workers(recruiter_id)
@@ -173,11 +184,12 @@ def api_task_time_summary(worker_id: int):
     return get_task_time_summary(worker_id)
 
 
+
 # Support Tickets
 @router.post("/support/tickets")
-def api_create_support_ticket(worker_id: int, category: str, subject: str, description: str, priority: str = "medium"):
-    return create_support_ticket_service(worker_id, category, subject, description, priority)
-
+def api_create_support_ticket( worker_id: int,  category: str,  subject: str,  description: str,  priority: str = "medium", attendance_date: str = None
+):
+    return create_support_ticket_service(worker_id, category, subject, description, priority, attendance_date)
 
 @router.get("/admin/support/tickets")
 def api_list_support_tickets():

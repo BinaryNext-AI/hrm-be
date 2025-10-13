@@ -44,6 +44,28 @@ def create_user(email: str, password_hashed: str, role: str):
             conn.commit()
             return cur.lastrowid
 
+def delete_user_by_email(email: str, role: str = None):
+    if db.pool is None:
+        db.init_pool()
+
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            if role:
+                cur.execute("DELETE FROM users WHERE email=%s AND role=%s", (email, role))
+            else:
+                cur.execute("DELETE FROM users WHERE email=%s", (email,))
+            conn.commit()
+def update_user_password(email: str, new_password_hashed: str):
+    if db.pool is None:
+        db.init_pool()
+
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE users SET password_hashed=%s WHERE email=%s",
+                (new_password_hashed, email),
+            )
+            conn.commit()
 
 def list_users_by_role(role: str):
     # Use direct connection to avoid pool issues
@@ -236,11 +258,41 @@ def today_status(worker_id: int):
             return cur.fetchone()
 
 
+def start_global_session1(worker_id: int):
+    if db.pool is None:
+        db.init_pool()
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO global_sessions (worker_id, start_at) VALUES (%s, NOW())",
+                (worker_id,),
+            )
+            conn.commit()
+
+
+def stop_global_session1(worker_id: int):
+    if db.pool is None:
+        db.init_pool()
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE global_sessions SET end_at=NOW() WHERE worker_id=%s AND end_at IS NULL ORDER BY id DESC LIMIT 1",
+                (worker_id,),
+            )
+            conn.commit()
+
 def start_global_session(worker_id: int):
     if db.pool is None:
         db.init_pool()
     with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
+            # First, automatically check in the worker if not already checked in today
+            cur.execute(
+                "INSERT INTO time_logs (worker_id, check_in, work_date) VALUES (%s, NOW(), CURDATE()) ON DUPLICATE KEY UPDATE check_in=IFNULL(check_in, NOW())",
+                (worker_id,),
+            )
+            
+            # Then start the global session
             cur.execute(
                 "INSERT INTO global_sessions (worker_id, start_at) VALUES (%s, NOW())",
                 (worker_id,),
@@ -258,8 +310,6 @@ def stop_global_session(worker_id: int):
                 (worker_id,),
             )
             conn.commit()
-
-
 def start_task_session(worker_id: int, task_id: int):
     if db.pool is None:
         db.init_pool()
@@ -590,18 +640,34 @@ def get_detailed_time_analytics(worker_id: int, days: int = 30):
             conn.close()
 
 
-def create_support_ticket(worker_id: int, category: str, subject: str, description: str, priority: str = "medium"):
+
+def create_support_ticket(worker_id: int, category: str, subject: str, description: str, priority: str = "medium", attendance_date: str = None):
     """Create a new support ticket"""
     try:
-        print(f"Creating support ticket: worker_id={worker_id}, category={category}, subject={subject}")
+        print(f"Creating support ticket: worker_id={worker_id}, category={category}, subject={subject}, attendance_date={attendance_date}")
         if db.pool is None:
             db.init_pool()
         with db.pool.get_conn() as conn:
             with conn.cursor() as cur:
+                # Check if attendance_date column exists, if not, add it
                 cur.execute("""
-                    INSERT INTO support_tickets (worker_id, category, subject, description, priority)
-                    VALUES (%s, %s, %s, %s, %s)
-                """, (worker_id, category, subject, description, priority))
+                    SELECT COUNT(*) 
+                    FROM information_schema.columns 
+                    WHERE table_name = 'support_tickets' 
+                    AND column_name = 'attendance_date'
+                """)
+                
+                if cur.fetchone()[0] == 0:
+                    cur.execute("""
+                        ALTER TABLE support_tickets 
+                        ADD COLUMN attendance_date DATE NULL
+                    """)
+                    conn.commit()
+                
+                cur.execute("""
+                    INSERT INTO support_tickets (worker_id, category, subject, description, priority, attendance_date)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (worker_id, category, subject, description, priority, attendance_date))
                 
                 ticket_id = cur.lastrowid
                 conn.commit()
@@ -610,9 +676,7 @@ def create_support_ticket(worker_id: int, category: str, subject: str, descripti
     except Exception as e:
         print(f"Error creating support ticket: {e}")
         return {"ok": False, "message": str(e)}
-
-
-def list_support_tickets():
+def list_support_tickets1():
     """List all support tickets for admin"""
     try:
         if db.pool is None:
@@ -631,7 +695,67 @@ def list_support_tickets():
     except Exception as e:
         print(f"Error listing support tickets: {e}")
         return {"ok": False, "message": str(e)}
-
+def list_all_support_tickets():
+    """Get all support tickets for admin view"""
+    try:
+        if db.pool is None:
+            db.init_pool()
+        with db.pool.get_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        st.id,
+                        st.worker_id,
+                        st.category,
+                        st.subject,
+                        st.description,
+                        st.priority,
+                        st.status,
+                        st.admin_response,
+                        st.attendance_date,
+                        st.created_at,
+                        st.updated_at,
+                        u.email as worker_email,
+                        u.role as worker_role
+                    FROM support_tickets st
+                    LEFT JOIN users u ON st.worker_id = u.id
+                    ORDER BY 
+                        CASE st.status 
+                            WHEN 'open' THEN 1
+                            WHEN 'in_progress' THEN 2
+                            WHEN 'resolved' THEN 3
+                            WHEN 'closed' THEN 4
+                        END,
+                        CASE st.priority
+                            WHEN 'high' THEN 1
+                            WHEN 'medium' THEN 2
+                            WHEN 'low' THEN 3
+                        END,
+                        st.created_at DESC
+                """)
+                
+                tickets = []
+                for row in cur.fetchall():
+                    tickets.append({
+                        "id": row[0],
+                        "worker_id": row[1],
+                        "category": row[2],
+                        "subject": row[3],
+                        "description": row[4],
+                        "priority": row[5],
+                        "status": row[6],
+                        "admin_response": row[7],
+                        "attendance_date": row[8].isoformat() if row[8] else None,
+                        "created_at": row[9].isoformat() if row[9] else None,
+                        "updated_at": row[10].isoformat() if row[10] else None,
+                        "worker_email": row[11],
+                        "worker_role": row[12]
+                    })
+                
+                return {"ok": True, "tickets": tickets}
+    except Exception as e:
+        print(f"Error getting support tickets: {e}")
+        return {"ok": False, "message": str(e)}
 
 def update_support_ticket(ticket_id: int, status: str = None, admin_response: str = None):
     """Update support ticket status and/or admin response"""

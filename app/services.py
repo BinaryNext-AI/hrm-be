@@ -3,9 +3,11 @@ from .auth import hash_password_bcrypt_like, verify_password
 from .management import (
     get_user_by_email,
     create_user,
+    delete_user_by_email,
     list_users_by_role,
     assign_worker_to_recruiter,
     list_workers_for_recruiter,
+    update_user_password,
     get_recruiter_for_worker,
     list_all_assignments,
     create_task,
@@ -32,6 +34,23 @@ def signup_recruiter(email: str, password: str):
     user_id = create_user(email, hash_password_bcrypt_like(password), "recruiter")
     return {"ok": True, "id": user_id, "role": "recruiter"}
 
+def remove_recruiter(email: str):
+    user = get_user_by_email(email)
+    if not user:
+        return {"ok": False, "detail": "Recruiter not found"}
+    if user.get("role") != "recruiter":
+        return {"ok": False, "detail": f"Recruiter with email '{email}' not found or invalid role"}
+    delete_user_by_email(email, role="recruiter")
+    return {"ok": True, "detail": "Recruiter deleted successfully"}
+def remove_worker(email: str):
+    user = get_user_by_email(email)
+    if not user:
+        return {"ok": False, "detail": "Worker not found"}
+    if user.get("role") not in ["hire", "worker"]:  # adjust depending on your schema
+        return {"ok": False, "detail": f"Worker with email '{email}' not found or invalid role"}
+
+    delete_user_by_email(email,role="hire")
+    return {"ok": True, "detail": "Worker deleted successfully"}
 
 def login_user(email: str, password: str):
     # Super admin override
@@ -62,6 +81,23 @@ def create_worker(email: str, password: str):
     user_id = create_user(email, hash_password_bcrypt_like(password), "hire")
     return {"ok": True, "id": user_id, "role": "hire"}
 
+
+
+def change_password(email: str, old_password: str, new_password: str):
+    user = get_user_by_email(email)
+    if not user:
+        return {"ok": False, "detail": "User not found"}
+
+    # Verify old password
+    if not verify_password(old_password, user["password_hashed"]):
+        return {"ok": False, "detail": "Incorrect old password"}
+
+    # Hash new password
+    new_hashed = hash_password_bcrypt_like(new_password)
+
+    # Update password in DB
+    update_user_password(email, new_hashed)
+    return {"ok": True, "detail": "Password updated successfully"}
 
 def assign_worker(worker_id: int, recruiter_id: int):
     assign_worker_to_recruiter(worker_id, recruiter_id)
@@ -159,12 +195,10 @@ def get_task_time_summary(worker_id: int):
     return {"ok": True, "item": task_time_summary(worker_id)}
 
 
-def create_support_ticket_service(worker_id: int, category: str, subject: str, description: str, priority: str = "medium"):
+def create_support_ticket_service(worker_id: int, category: str, subject: str, description: str, priority: str = "medium", attendance_date: str = None):
     """Create a new support ticket"""
     from .management import create_support_ticket
-    return create_support_ticket(worker_id, category, subject, description, priority)
-
-
+    return create_support_ticket(worker_id, category, subject, description, priority, attendance_date)
 def list_support_tickets_service():
     """List all support tickets for admin"""
     from .management import list_support_tickets
