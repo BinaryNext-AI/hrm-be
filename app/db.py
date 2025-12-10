@@ -56,8 +56,17 @@ def init_pool() -> None:
                             email VARCHAR(255) NOT NULL UNIQUE,
                             password_hashed VARCHAR(255) NOT NULL,
                             role VARCHAR(50) NOT NULL,
+                            phone VARCHAR(20) NULL,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                        """
+                    )
+                    
+                    # Add phone column if it doesn't exist (migration)
+                    cur.execute(
+                        """
+                        ALTER TABLE users 
+                        ADD COLUMN IF NOT EXISTS phone VARCHAR(20) NULL
                         """
                     )
                     cur.execute(
@@ -111,9 +120,18 @@ def init_pool() -> None:
                             worker_id INT NOT NULL,
                             start_at DATETIME NOT NULL,
                             end_at DATETIME NULL,
+                            paused BOOLEAN DEFAULT FALSE,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             CONSTRAINT fk_gs_worker FOREIGN KEY (worker_id) REFERENCES users(id) ON DELETE CASCADE
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                        """
+                    )
+                    
+                    # Add paused column if it doesn't exist (migration)
+                    cur.execute(
+                        """
+                        ALTER TABLE global_sessions 
+                        ADD COLUMN IF NOT EXISTS paused BOOLEAN DEFAULT FALSE
                         """
                     )
                     cur.execute(
@@ -124,12 +142,21 @@ def init_pool() -> None:
                             worker_id INT NOT NULL,
                             start_at DATETIME NOT NULL,
                             end_at DATETIME NULL,
+                            paused BOOLEAN DEFAULT FALSE,
                             keystrokes INT DEFAULT 0,
                             mouse_clicks INT DEFAULT 0,
                             mouse_moves INT DEFAULT 0,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             CONSTRAINT fk_ts_worker FOREIGN KEY (worker_id) REFERENCES users(id) ON DELETE CASCADE
                         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                        """
+                    )
+                    
+                    # Add paused column if it doesn't exist (migration)
+                    cur.execute(
+                        """
+                        ALTER TABLE task_sessions 
+                        ADD COLUMN IF NOT EXISTS paused BOOLEAN DEFAULT FALSE
                         """
                     )
                     cur.execute(

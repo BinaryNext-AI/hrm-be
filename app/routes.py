@@ -1,12 +1,15 @@
 from fastapi import APIRouter, Query, Form
 from .services import (
     signup_recruiter,
+    signup_recruiter_with_phone,
     login_user,
     get_recruiters,
     get_workers,
     create_worker,
+    create_worker_by_recruiter,
     remove_worker,
     change_password,
+    change_password_by_user_id,
     assign_worker,
     remove_recruiter,
     recruiter_workers,
@@ -20,6 +23,9 @@ from .services import (
     worker_today,
     global_session_start,
     global_session_stop,
+    pause_all_sessions_service,
+    stop_all_sessions_service,
+    resume_global_session_service,
     task_session_start,
     task_session_stop,
     global_summary,
@@ -61,8 +67,39 @@ def logout():
     return {"ok": True}
 
 @router.post("/auth/change-password")
-def change_password_route(email: str, old_password: str, new_password: str):
+def change_password_route(user_id: int, new_password: str, confirm_password: str):
+    """New change password endpoint - only requires new password and confirmation"""
+    if new_password != confirm_password:
+        return {"ok": False, "detail": "Passwords do not match"}
+    
+    if len(new_password) < 6:
+        return {"ok": False, "detail": "Password must be at least 6 characters long"}
+    
+    return change_password_by_user_id(user_id, new_password)
+
+
+@router.post("/auth/change-password-legacy")
+def change_password_legacy_route(email: str, old_password: str, new_password: str):
+    """Legacy change password endpoint - kept for backward compatibility"""
     return change_password(email, old_password, new_password)
+
+
+@router.post("/auth/recruiter-signup")
+def recruiter_signup_route(email: str, password: str, confirm_password: str, phone: str):
+    """Recruiter signup with phone number"""
+    if password != confirm_password:
+        return {"ok": False, "detail": "Passwords do not match"}
+    
+    if len(password) < 6:
+        return {"ok": False, "detail": "Password must be at least 6 characters long"}
+    
+    if not email or not email.strip():
+        return {"ok": False, "detail": "Email is required"}
+    
+    if not phone or not phone.strip():
+        return {"ok": False, "detail": "Phone number is required"}
+    
+    return signup_recruiter_with_phone(email.strip(), password, phone.strip())
 
 @router.get("/admin/recruiters")
 def list_recruiters():
@@ -92,6 +129,18 @@ def delete_recruiter(email: str):
 @router.get("/recruiter/workers")
 def get_my_workers(recruiter_id: int):
     return recruiter_workers(recruiter_id)
+
+
+@router.post("/recruiter/workers")
+def create_worker_by_recruiter_route(recruiter_id: int, email: str, password: str):
+    """Create a worker and automatically assign to the recruiter"""
+    if len(password) < 6:
+        return {"ok": False, "detail": "Password must be at least 6 characters long"}
+    
+    if not email or not email.strip():
+        return {"ok": False, "detail": "Email is required"}
+    
+    return create_worker_by_recruiter(email.strip(), password, recruiter_id)
 
 
 @router.get("/worker/recruiter")
@@ -142,6 +191,30 @@ def api_global_start(worker_id: int):
 @router.post("/time/global/stop")
 def api_global_stop(worker_id: int):
     return global_session_stop(worker_id)
+
+
+@router.post("/time/global/pause")
+def api_global_pause(worker_id: int):
+    """Pause global session (used during logout)"""
+    return global_session_stop(worker_id)  # For now, use existing stop logic
+
+
+@router.post("/time/global/resume")
+def api_global_resume(worker_id: int):
+    """Resume or start global session for the day"""
+    return resume_global_session_service(worker_id)
+
+
+@router.post("/time/task/pause/all")
+def api_pause_all_sessions(worker_id: int):
+    """Pause all active sessions for a worker (used during logout)"""
+    return pause_all_sessions_service(worker_id)
+
+
+@router.post("/time/task/stop/all")
+def api_stop_all_sessions(worker_id: int):
+    """Stop all active sessions for a worker (used during EOD submission)"""
+    return stop_all_sessions_service(worker_id)
 
 
 @router.post("/time/task/start")

@@ -32,15 +32,30 @@ def get_user_by_email(email: str):
             return cur.fetchone()
 
 
-def create_user(email: str, password_hashed: str, role: str):
+def get_user_by_id(user_id: int):
+    if db.pool is None:
+        db.init_pool()
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor(dictionary=True) as cur:
+            cur.execute("SELECT id, email, password_hashed, role, created_at FROM users WHERE id=%s", (user_id,))
+            return cur.fetchone()
+
+
+def create_user(email: str, password_hashed: str, role: str, phone: str = None):
     if db.pool is None:
         db.init_pool()
     with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
         with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO users (email, password_hashed, role) VALUES (%s, %s, %s)",
-                (email, password_hashed, role),
-            )
+            if phone:
+                cur.execute(
+                    "INSERT INTO users (email, password_hashed, role, phone) VALUES (%s, %s, %s, %s)",
+                    (email, password_hashed, role, phone),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO users (email, password_hashed, role) VALUES (%s, %s, %s)",
+                    (email, password_hashed, role),
+                )
             conn.commit()
             return cur.lastrowid
 
@@ -71,6 +86,7 @@ def list_users_by_role(role: str):
     # Use direct connection to avoid pool issues
     import mysql.connector
     try:
+        print(f"Fetching users with role: {role}")
         conn = mysql.connector.connect(
             host='srv1919.hstgr.io',
             port=3306,
@@ -81,10 +97,20 @@ def list_users_by_role(role: str):
             autocommit=True
         )
         with conn.cursor(dictionary=True) as cur:
+            # First, let's see what roles exist in the database
+            cur.execute("SELECT DISTINCT role, COUNT(*) as count FROM users GROUP BY role")
+            all_roles = cur.fetchall()
+            print(f"Available roles in database: {all_roles}")
+            
+            # Now fetch users with the requested role
             cur.execute("SELECT id, email, role, created_at FROM users WHERE role=%s ORDER BY created_at DESC LIMIT 1000", (role,))
-            return cur.fetchall()
+            users = cur.fetchall()
+            print(f"Found {len(users)} users with role '{role}'")
+            return users
     except Exception as e:
         print(f"Error in list_users_by_role: {e}")
+        import traceback
+        traceback.print_exc()
         return []
     finally:
         if 'conn' in locals():
@@ -339,6 +365,90 @@ def stop_task_session(worker_id: int, task_id: int, keystrokes: int, mouse_click
             conn.commit()
 
 
+def pause_all_active_sessions(worker_id: int):
+    """Pause all active global and task sessions for a worker (used during logout)"""
+    if db.pool is None:
+        db.init_pool()
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            # Pause all active global sessions (set end_at but mark as paused)
+            cur.execute(
+                "UPDATE global_sessions SET end_at=NOW(), paused=TRUE WHERE worker_id=%s AND end_at IS NULL",
+                (worker_id,),
+            )
+            
+            # Pause all active task sessions
+            cur.execute(
+                "UPDATE task_sessions SET end_at=NOW(), paused=TRUE WHERE worker_id=%s AND end_at IS NULL",
+                (worker_id,),
+            )
+            
+            conn.commit()
+            print(f"Paused all active sessions for worker {worker_id}")
+
+
+def stop_all_active_sessions(worker_id: int):
+    """Stop all active global and task sessions for a worker (used during EOD submission)"""
+    if db.pool is None:
+        db.init_pool()
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            # Stop all active global sessions
+            cur.execute(
+                "UPDATE global_sessions SET end_at=NOW(), paused=FALSE WHERE worker_id=%s AND end_at IS NULL",
+                (worker_id,),
+            )
+            
+            # Stop all active task sessions
+            cur.execute(
+                "UPDATE task_sessions SET end_at=NOW(), paused=FALSE WHERE worker_id=%s AND end_at IS NULL",
+                (worker_id,),
+            )
+            
+            conn.commit()
+            print(f"Stopped all active sessions for worker {worker_id}")
+
+
+def resume_global_session(worker_id: int):
+    """Resume a paused global session or start new one for the day"""
+    if db.pool is None:
+        db.init_pool()
+    with db.pool.get_conn() as conn:  # type: ignore[attr-defined]
+        with conn.cursor() as cur:
+            # Check if there's a paused session for today
+            cur.execute(
+                """
+                SELECT id FROM global_sessions 
+                WHERE worker_id=%s AND DATE(start_at)=CURDATE() AND paused=TRUE 
+                ORDER BY id DESC LIMIT 1
+                """,
+                (worker_id,),
+            )
+            paused_session = cur.fetchone()
+            
+            if paused_session:
+                # Resume the paused session by creating a new session segment
+                cur.execute(
+                    "INSERT INTO global_sessions (worker_id, start_at, paused) VALUES (%s, NOW(), FALSE)",
+                    (worker_id,),
+                )
+                print(f"Resumed paused global session for worker {worker_id}")
+            else:
+                # Start fresh session for the day (auto check-in)
+                cur.execute(
+                    "INSERT INTO time_logs (worker_id, check_in, work_date) VALUES (%s, NOW(), CURDATE()) ON DUPLICATE KEY UPDATE check_in=IFNULL(check_in, NOW())",
+                    (worker_id,),
+                )
+                
+                cur.execute(
+                    "INSERT INTO global_sessions (worker_id, start_at, paused) VALUES (%s, NOW(), FALSE)",
+                    (worker_id,),
+                )
+                print(f"Started new global session for worker {worker_id}")
+            
+            conn.commit()
+
+
 def global_today_summary(worker_id: int):
     if db.pool is None:
         db.init_pool()
@@ -383,6 +493,7 @@ def submit_eod(worker_id: int, accomplishments: str, challenges: str, blockers: 
                 raise Exception("Worker not assigned to any recruiter")
             recruiter_id = assignment[0]
             
+            # 1. Submit the EOD report
             cur.execute(
                 """
                 INSERT INTO end_of_day_reports (worker_id, recruiter_id, work_date, accomplishments, challenges, blockers, hours, next_day_plan)
@@ -390,7 +501,27 @@ def submit_eod(worker_id: int, accomplishments: str, challenges: str, blockers: 
                 """,
                 (worker_id, recruiter_id, accomplishments, challenges, blockers, hours, next_day_plan),
             )
+            
+            # 2. End the workday - stop all active sessions (not just pause)
+            cur.execute(
+                "UPDATE global_sessions SET end_at=NOW(), paused=FALSE WHERE worker_id=%s AND end_at IS NULL",
+                (worker_id,),
+            )
+            
+            cur.execute(
+                "UPDATE task_sessions SET end_at=NOW(), paused=FALSE WHERE worker_id=%s AND end_at IS NULL",
+                (worker_id,),
+            )
+            
+            # 3. Final checkout for the day
+            cur.execute(
+                "UPDATE time_logs SET check_out=NOW() WHERE worker_id=%s AND work_date=CURDATE() AND check_out IS NULL",
+                (worker_id,),
+            )
+            
             conn.commit()
+            print(f"EOD submitted and workday concluded for worker {worker_id}")
+            
     except Exception as e:
         print(f"Error in submit_eod: {e}")
         raise
@@ -695,6 +826,61 @@ def list_support_tickets1():
     except Exception as e:
         print(f"Error listing support tickets: {e}")
         return {"ok": False, "message": str(e)}
+def list_support_tickets():
+    """List all support tickets for admin - using direct connection for reliability"""
+    import mysql.connector
+    try:
+        conn = mysql.connector.connect(
+            host='srv1919.hstgr.io',
+            port=3306,
+            user='u784288682_admin_hrm',
+            password='Hammassir@123',
+            database='u784288682_HRM_system',
+            connection_timeout=10,
+            autocommit=True
+        )
+        with conn.cursor(dictionary=True) as cur:
+            cur.execute("""
+                SELECT 
+                    st.id,
+                    st.worker_id,
+                    st.category,
+                    st.subject,
+                    st.description,
+                    st.priority,
+                    st.status,
+                    st.admin_response,
+                    st.attendance_date,
+                    st.created_at,
+                    st.updated_at,
+                    u.email as worker_email,
+                    u.role as worker_role
+                FROM support_tickets st
+                LEFT JOIN users u ON st.worker_id = u.id
+                ORDER BY 
+                    CASE st.status 
+                        WHEN 'open' THEN 1
+                        WHEN 'in_progress' THEN 2
+                        WHEN 'resolved' THEN 3
+                        WHEN 'closed' THEN 4
+                    END,
+                    CASE st.priority
+                        WHEN 'high' THEN 1
+                        WHEN 'medium' THEN 2
+                        WHEN 'low' THEN 3
+                    END,
+                    st.created_at DESC
+            """)
+            
+            tickets = cur.fetchall()
+            return {"ok": True, "tickets": tickets}
+    except Exception as e:
+        print(f"Error getting support tickets: {e}")
+        return {"ok": False, "message": str(e)}
+    finally:
+        if 'conn' in locals():
+            conn.close()
+
 def list_all_support_tickets():
     """Get all support tickets for admin view"""
     try:

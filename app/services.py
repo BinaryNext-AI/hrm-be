@@ -34,6 +34,14 @@ def signup_recruiter(email: str, password: str):
     user_id = create_user(email, hash_password_bcrypt_like(password), "recruiter")
     return {"ok": True, "id": user_id, "role": "recruiter"}
 
+
+def signup_recruiter_with_phone(email: str, password: str, phone: str):
+    """New recruiter signup with phone number"""
+    if get_user_by_email(email):
+        return {"ok": False, "detail": "Email already exists"}
+    user_id = create_user(email, hash_password_bcrypt_like(password), "recruiter", phone)
+    return {"ok": True, "id": user_id, "role": "recruiter", "email": email}
+
 def remove_recruiter(email: str):
     user = get_user_by_email(email)
     if not user:
@@ -68,11 +76,17 @@ def login_user(email: str, password: str):
 
 
 def get_recruiters():
-    return {"ok": True, "items": list_users_by_role("recruiter")}
+    print("Getting recruiters...")
+    recruiters = list_users_by_role("recruiter")
+    print(f"Retrieved {len(recruiters)} recruiters")
+    return {"ok": True, "items": recruiters}
 
 
 def get_workers():
-    return {"ok": True, "items": list_users_by_role("hire")}
+    print("Getting workers...")
+    workers = list_users_by_role("hire")
+    print(f"Retrieved {len(workers)} workers")
+    return {"ok": True, "items": workers}
 
 
 def create_worker(email: str, password: str):
@@ -82,8 +96,39 @@ def create_worker(email: str, password: str):
     return {"ok": True, "id": user_id, "role": "hire"}
 
 
+def create_worker_by_recruiter(email: str, password: str, recruiter_id: int):
+    """Create a worker and automatically assign to the recruiter"""
+    if get_user_by_email(email):
+        return {"ok": False, "detail": "Email already exists"}
+    
+    # Create the worker
+    worker_id = create_user(email, hash_password_bcrypt_like(password), "hire")
+    
+    # Automatically assign the worker to the recruiter
+    assign_worker_to_recruiter(worker_id, recruiter_id)
+    
+    return {"ok": True, "id": worker_id, "role": "hire", "assigned_to": recruiter_id}
+
+
+
+def change_password_by_user_id(user_id: int, new_password: str):
+    """Change password for authenticated user - no old password verification needed"""
+    # Get user by ID to get their email for the update
+    from .management import get_user_by_id
+    user = get_user_by_id(user_id)
+    if not user:
+        return {"ok": False, "detail": "User not found"}
+
+    # Hash new password
+    new_hashed = hash_password_bcrypt_like(new_password)
+
+    # Update password in DB using email (since update_user_password uses email)
+    update_user_password(user["email"], new_hashed)
+    return {"ok": True, "detail": "Password updated successfully"}
+
 
 def change_password(email: str, old_password: str, new_password: str):
+    """Legacy change password function - kept for backward compatibility"""
     user = get_user_by_email(email)
     if not user:
         return {"ok": False, "detail": "User not found"}
@@ -155,6 +200,27 @@ def global_session_start(worker_id: int):
 
 def global_session_stop(worker_id: int):
     stop_global_session(worker_id)
+    return {"ok": True}
+
+
+def pause_all_sessions_service(worker_id: int):
+    """Pause all active sessions for a worker (used during logout)"""
+    from .management import pause_all_active_sessions
+    pause_all_active_sessions(worker_id)
+    return {"ok": True}
+
+
+def stop_all_sessions_service(worker_id: int):
+    """Stop all active sessions for a worker (used during EOD submission)"""
+    from .management import stop_all_active_sessions
+    stop_all_active_sessions(worker_id)
+    return {"ok": True}
+
+
+def resume_global_session_service(worker_id: int):
+    """Resume or start global session for the day"""
+    from .management import resume_global_session
+    resume_global_session(worker_id)
     return {"ok": True}
 
 
